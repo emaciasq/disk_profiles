@@ -149,6 +149,8 @@ class disk_profile():
             range(self.ny)]) - self.cent[0]
         yarray = np.array([range(self.ny) for i in
             range(self.nx)]).T - self.cent[1]
+        xarray *= self.cellsize
+        yarray *= self.cellsize
 
         # We rotate these arrays according to the PA of the source
         # The input angle should be a PA (from N to E), but we subtract 90
@@ -161,7 +163,7 @@ class disk_profile():
         self.yrot = self.yrot / np.cos(np.deg2rad(self.inc))
 
         # Array with the radii
-        self.rrot = np.sqrt(self.xrot**2 + self.yrot**2) * self.cellsize
+        self.rrot = np.sqrt(self.xrot**2 + self.yrot**2)
 
         # Array with the azimuthal angles
         # (yarray and xarray ar used so that phi is the azimuthal angle in the
@@ -314,7 +316,7 @@ class disk_profile():
         """
         if outfile == None:
             outfile = self.im_name[:-5] + '.csv'
-        f = open(outfile, 'w')
+        f = open(outfile + '.csv', 'w')
         if self.err_type == 'percentiles':
             f.write('Radius[arcsec],Int[{}],84_percentile,16_percentile\n'.format(self.IntUnit))
             for r, A, ErrA in zip(self.radii, self.int_aver, self.int_aver_err):
@@ -381,7 +383,7 @@ class disk_profile():
         # We write the output result in a file
         if outfile == None:
             outfile = self.im_name[:-5] + '.csv'
-        f = open(outfile, 'w')
+        f = open(outfile + '.csv', 'w')
         f.write('Radius[arcsec],Int[{}],Int_err\n'.format(self.IntUnit))
         for r, Int, err in zip(self.radii_slice, self.int_slice,
         self.int_slice_err):
@@ -426,8 +428,8 @@ class disk_profile():
                     (self.phi >= phi0) & (self.phi <= phi1)])
 
 
-def deproject_image(im_name, inc, pa, rmax = 1.0, cent = None, dr = 0.02,
-                    nphi = 50, doPlot = False, rms = None, contours = False,
+def deproject_image(im_name, inc, pa, rmax = 1.0, cent = None, dr = None,
+                    nphi = 50, do_plot = False, rms = None, contours = False,
                     levels = [], outfile = None):
     """Creates a deprojected image, in polar coordinates (azimuth vs radii).
 
@@ -447,7 +449,7 @@ def deproject_image(im_name, inc, pa, rmax = 1.0, cent = None, dr = 0.02,
         Optional; size of radial pixel of output deprojected image, in arcsec.
       nphi:
         Optional; number of bins in azimtuh angle.
-      doPlot:
+      do_plot:
         Optional; if True, an image will be created. Default is False.
       rms:
         Optional; rms of the map. If provided, it can be used to set
@@ -473,13 +475,14 @@ def deproject_image(im_name, inc, pa, rmax = 1.0, cent = None, dr = 0.02,
 
     deproj_img.deprojected_image(rmax = rmax, dr = dr, nphi = nphi)
 
-    if doPlot:
+    if do_plot:
         f = plt.figure()
         ax = f.add_subplot(111)
         if contours:
             if len(levels) == 0:
-                levels = list(map(lambda x: x*np.max(deproj_img.deproj_image),
-                    [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,0.99]))
+                levels = list(map(lambda x: x *
+                         np.nanmax(deproj_img.deproj_image),
+                         [0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,0.99]))
             elif rms != None:
                 levels = list(map(lambda x: x*rms,levels))
             else:
@@ -495,24 +498,24 @@ def deproject_image(im_name, inc, pa, rmax = 1.0, cent = None, dr = 0.02,
                 ax.imshow(
                     deproj_img.deproj_image.T, extent = (0.0,rmax,0.,360.),
                     aspect = rmax/360.*0.5, cmap = cm.viridis, vmin = rms,
-                    vmax = np.max(deproj_img.deproj_image))
+                    vmax = np.nanmax(deproj_img.deproj_image))
             else:
                 ax.imshow(
                     deproj_img.deproj_image.T, extent=(0.0, rmax, 0., 360.),
                     aspect = rmax/360.*0.5, cmap = cm.viridis, vmin= 0.0,
-                    vmax = np.max(deproj_img.deproj_image))
+                    vmax = np.nanmax(deproj_img.deproj_image))
         ax.set_ylabel('Azimuth (deg)',fontsize=15)
         ax.set_xlabel('Radii (au)',fontsize=15)
         if outfile == None:
             outfile = im_name[:-5] + '_deproj.pdf'
-        plt.savefig(outfile)
+        plt.savefig(outfile + '.pdf')
         plt.close(f)
     return deproj_img
 
 
-def rad_slice(im_name, pa, rmax, rms=np.nan, cent=None, dr=None, width=None,
-              fold=True, outfile=None, do_plot=True, color='#809fff', dist=None,
-              ylim=None, ylog=False):
+def rad_slice(im_name, pa, rmax = 1.0, rms = np.nan, cent = None, dr = None,
+              width = None, fold = True, outfile = None, do_plot = True,
+              color = '#809fff', dist = None, ylim = None, ylog = False):
     """Creates a slice across the major axis of a source, from -rmax to rmax.
 
     Returns arrays with radii, integrated intensity and uncertainty.
@@ -521,7 +524,7 @@ def rad_slice(im_name, pa, rmax, rms=np.nan, cent=None, dr=None, width=None,
       im_name:
         name of the image, in fits format.
       pa:
-        position angle of the source, in degrees.
+        position angle of the slice, in degrees.
       rmax:
          maximum radii for the radial profile, in arcsec.
       rms:
@@ -632,16 +635,16 @@ def rad_slice(im_name, pa, rmax, rms=np.nan, cent=None, dr=None, width=None,
 
         if outfile == None:
             outfile = im_name[:-5] + '_slice.pdf'
-        plt.savefig(outfile, dpi = 650)
+        plt.savefig(outfile + '_slice.pdf', dpi = 650)
         plt.close(fig)
 
     return slice_img
 
 
-def rad_profile(im_name, inc, pa, rmin, rmax, rms = np.nan, dr = None,
-                cent = None, ring_width = None, phi_min = 0.0,
+def rad_profile(im_name, inc, pa, rmin = 0.0, rmax = 1.0, rms = np.nan,
+                dr = None, cent = None, ring_width = None, phi_min = 0.0,
                 phi_max = 2.*np.pi, err_type = 'rms_a', do_model = False,
-                outfile = None, do_plot=True, color='#809fff', dist='',
+                outfile = None, do_plot=True, color='#809fff', dist=None,
                 ylim=None, ylog=False):
     """Creates an azimuthally averaged radial profile.
 
@@ -749,7 +752,7 @@ def rad_profile(im_name, inc, pa, rmin, rmax, rms = np.nan, dr = None,
         if ylim != None:
             ax1.set_ylim(ylim)
 
-        if dist != '':
+        if dist != None:
             twax1 = ax1.twiny()
             twax1.set_xlim([0.0, rmax * dist])
             twax1.xaxis.set_minor_locator(ticker.MultipleLocator(10))
