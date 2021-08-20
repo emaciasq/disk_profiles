@@ -1,6 +1,6 @@
 # disk_profiles
 
-Python toolkit to obtain different kinds of intensity profiles from a
+Python module to obtain different kinds of intensity profiles from a
 FITS image. Currently, three kinds of profiles can be obtained:
 - slice profile: Profile along a slice in an image.
 - azimuthally averaged profile: profile obtained by averaging the emission in

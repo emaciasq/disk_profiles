@@ -3,6 +3,7 @@ import astropy.io.fits as pyfits
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import matplotlib.cm as cm
+from scipy.stats import binned_statistic
 
 class disk_profile():
     """Class to perform different kinds of radial profiles for a disk.
@@ -175,7 +176,7 @@ class disk_profile():
     def averaged_profile(self, rmax = 1.0, rmin = 0.0, dr = None,
                          ring_width = None, phi_min=0.0, phi_max=2.*np.pi,
                          err_type='std_a', rms = np.nan, do_model = False,
-                         **kwargs):
+                         method = 'standard', **kwargs):
         """Computes azimuthally averaged intensity profile.
 
         Args:
@@ -197,7 +198,7 @@ class disk_profile():
             0 and 2pi.
           err_type:
             Optional; it sets how the uncertainty of the profile is calculated.
-            Default is 'rms'. Options are:
+            Default is 'std_a'. Options are:
               - 'rms_a', it will use the rms of the image divided by the square
               root of the area of the ring (in beams).
               - 'rms_l', it will use the rms of the image divided by the square
@@ -207,10 +208,19 @@ class disk_profile():
               divided by the square root of the area of the ring (in beams).
               - 'std_l', it will use the standard deviation inside each ring
               divided by the square root of the length of the ring (in beams).
+              - 'percentiles', it will use the median (instead of mean) and the
+              16th and 84th percentiles as the uncertainties.
           do_model:
               Optional; if True, a "model" image will be created with the
               emission of each ring, together with an image of the uncertainty
               in each ring. Default is False.
+          method:
+              Optional; it can be 'standard' or 'binned_statistic'. If
+              'binned_statistic' is chosen, it will use the 'binned_statistic'
+              function in scipy when obtaining the profile. This method might be
+              faster in some circumstances, but for all cases tested, the
+              standard method is faster. Note that the 'binned_statistic' method
+              requires that ring_width == dr.
         """
         if ('inc' in kwargs) or ('pa' in kwargs) or ('cent' in kwargs):
             self.deprojected_grid(**kwargs)
@@ -224,7 +234,6 @@ class disk_profile():
             dr = np.sqrt(self.bmaj * self.bmin) / 10. # 1/10th of the beam size
         if ring_width == None:
             ring_width = np.sqrt(self.bmaj * self.bmin) / 3. # 1/3 of the beam size
-
         # Vector of radii for the position of the annular rings, from rmin to rmax
         nr = (rmax - rmin) / dr # Number of radii
         radii = np.arange(int(nr) + 1) * (rmax - rmin)/nr + rmin + dr/2.
@@ -236,72 +245,151 @@ class disk_profile():
             if rms == np.nan:
                 print('WARNING: rms not provided. Uncertainties will be NaN')
 
-        if do_model:
-            model = np.ones_like(self.image)
+        flat_image = self.image.reshape(self.nx * self.ny)
+        flat_rrot = self.rrot.reshape(self.nx * self.ny)
+        flat_phi = self.phi.reshape(self.nx * self.ny)
 
-        # For each ring, we will calculate its average intensity and uncertainty
-        int_aver = []
-        int_aver_err = []
-        # We start averaging the emission
-        for r in radii:
-            r0 = r - ring_width / 2.
-            r1 = r + ring_width / 2.
-            if r0 < 0.0:
-                r0 = 0.0
-            Ring = self.image[(self.rrot >= r0) & (self.rrot < r1) &
-            (self.phi >= phi_min) & (self.phi <= phi_max)]
+        flat_image = flat_image[(flat_rrot <= rmax) & (flat_phi >= phi_min)
+            & (flat_phi <= phi_max)]
+        flat_rrot = flat_rrot[(flat_rrot <= rmax) & (flat_phi >= phi_min)
+            & (flat_phi <= phi_max)]
 
-            if err_type != 'percentiles':
-                int_aver.append(np.nanmean(Ring))
-            else:
-                int_aver.append(np.nanmedian(Ring))
+        if method == 'standard':
+            # For each ring, we will calculate its average intensity and uncertainty
+            int_aver = []
+            int_aver_err = []
+            # We start averaging the emission
+            for r in radii[:-1]:
+                r0 = r - ring_width / 2.
+                r1 = r + ring_width / 2.
+                if r0 < 0.0:
+                    r0 = 0.0
+                Ring = flat_image[(flat_rrot >= r0) & (flat_rrot < r1)]
 
-            if err_type == 'rms_a' or err_type == 'std_a':
-                Aring = np.pi * np.cos(self.inc * np.pi/180.) * (r1**2 - r0**2) # Area of ring
-                nbeams = Aring / Abeam # Number of beams in the ring
-                if nbeams < 1.0:
-                    nbeams = 1.0 # The error cannot be higher than one rms or std
-                int_aver_err0 = 1.0/np.sqrt(nbeams)
-                if err_type == 'std_a':
-                    # If std_a, we multiply by the standard deviation inside the ring
-                    int_aver_err0 *= np.nanstd(Ring)
+                if err_type != 'percentiles':
+                    int_aver.append(np.nanmean(Ring))
                 else:
-                    int_aver_err0 *= rms
-            elif err_type == 'rms_l' or err_type == 'std_l':
-                a = r
-                b = r * np.cos(self.inc * np.pi/180.)
+                    int_aver.append(np.nanmedian(Ring))
+
+                if 'std' in err_type:
+                    int_aver_err0 = np.nanstd(Ring)
+                elif err_type == 'percentiles':
+                    int_aver_err84 = np.nanpercentile(Ring,84)
+                    int_aver_err16 = np.nanpercentile(Ring,16)
+                    int_aver_err0 = [int_aver_err84, int_aver_err16]
+                elif 'rms' in err_type:
+                    int_aver_err0 = rms
+                else:
+                    raise IOError('Wrong err_type: Type of uncertainty (err_type)'
+                                  ' is not recognised.')
+                int_aver_err.append(int_aver_err0)
+
+            int_aver = np.array(int_aver)
+            int_aver_err = np.array(int_aver_err)
+
+            if '_a' in err_type:
+                # This does not consider that ring_width might not be == dr
+                # Aring = binned_statistic(
+                #     flat_rrot, flat_image, bins = radii - dr/2.,
+                #     statistic = 'count')[0] * self.cellsize**2.
+                # This other method has the problem that if phi_min and/or
+                # phi_max was set, it will be using a larger area than it should
+                Aring = []
+                for r in radii[:-1]:
+                    r0 = r - ring_width / 2.
+                    r1 = r + ring_width / 2.
+                    if r0 < 0.0:
+                        r0 = 0.0
+                    Aring.append(np.pi * np.cos(self.inc * np.pi/180.) *
+                        (r1**2 - r0**2)) # Area of ring
+                Aring = np.array(Aring)
+                nbeams = Aring / Abeam # Number of beams in the ring
+                nbeams[nbeams < 1.0] = 1.0 # The error cannot be higher than one rms or std
+                int_aver_err *= 1.0 / np.sqrt(nbeams)
+            elif '_l' in err_type:
+                a = radii[:-1]
+                b = radii[:-1] * np.cos(self.inc * np.pi/180.)
                 Lring = np.pi * (3. * (a + b) - np.sqrt((3.*a + b) *
                     (a + 3.*b))) # Length of elipse
                 # NOTE: this will not be accurate for high inclinations and low nbeams
                 nbeams = Lring / Lbeam
-                if nbeams < 1.0:
-                    nbeams = 1.0 # The error cannot be higher than one rms or std
-                int_aver_err0 = 1.0/np.sqrt(nbeams)
+                nbeams[nbeams < 1.0] = 1.0 # The error cannot be higher than one rms or std
+                int_aver_err *= 1.0 / np.sqrt(nbeams)
+        elif method == 'binned_statistic':
+            if ring_width != dr:
+                raise IOError('The binned_statistic method requires that '
+                              'ring_width == dr.')
+            if err_type != 'percentiles':
+                int_aver = binned_statistic(
+                    flat_rrot, flat_image, bins = radii - dr/2.)[0]
+            else:
+                int_aver = binned_statistic(
+                    flat_rrot, flat_image, bins = radii - dr/2.,
+                    statistic = 'median')[0]
+
+            if err_type == 'rms_a' or err_type == 'std_a':
+                Aring = binned_statistic(
+                    flat_rrot, flat_image, bins = radii - dr/2.,
+                    statistic = 'count')[0] * self.cellsize**2.
+                nbeams = Aring / Abeam # Number of beams in the ring
+                nbeams[nbeams < 1.0] = 1.0 # The error cannot be higher than one rms or std
+                int_aver_err = 1.0 / np.sqrt(nbeams)
+                if err_type == 'std_a':
+                    # If std_a, we multiply by the standard deviation inside the ring
+                    int_aver_err *= binned_statistic(
+                    flat_rrot, flat_image, bins = radii - dr/2.,
+                    statistic = 'std')[0]
+                else:
+                    int_aver_err *= rms
+            elif err_type == 'rms_l' or err_type == 'std_l':
+                a = radii
+                b = radii * np.cos(self.inc * np.pi/180.)
+                Lring = np.pi * (3. * (a + b) - np.sqrt((3.*a + b) *
+                    (a + 3.*b))) # Length of elipse
+                # NOTE: this will not be accurate for high inclinations and low nbeams
+                nbeams = Lring / Lbeam
+                nbeams[nbeams < 1.0] = 1.0 # The error cannot be higher than one rms or std
+                int_aver_err = 1.0 / np.sqrt(nbeams)
                 if err_type == 'std_l':
                     # If std_l, we multiply by the standard deviation inside the ring
-                    int_aver_err0 *= np.nanstd(Ring)
+                    int_aver_err *= binned_statistic(
+                    flat_rrot, flat_image, bins = radii - dr/2.,
+                    statistic = 'std')[0]
                 else:
-                    int_aver_err0 *= rms
+                    int_aver_err *= rms
             elif err_type == 'std':
-                int_aver_err0 = np.nanstd(Ring)
+                int_aver_err = binned_statistic(
+                flat_rrot, flat_image, bins = radii - dr/2.,
+                statistic = 'std')[0]
             elif err_type == 'percentiles':
-                int_aver_err84 = np.nanpercentile(Ring,84)
-                int_aver_err16 = np.nanpercentile(Ring,16)
-                int_aver_err0 = [int_aver_err84, int_aver_err16]
+                int_aver_err84 = binned_statistic(
+                    flat_rrot, flat_image, bins = radii - dr/2.,
+                    statistic = lambda x: np.nanpercentile(x, 84))[0]
+                int_aver_err16 = binned_statistic(
+                    flat_rrot, flat_image, bins = radii - dr/2.,
+                    statistic = lambda x: np.nanpercentile(x, 16))[0]
+                int_aver_err = [int_aver_err84, int_aver_err16]
             else:
                 raise IOError('Wrong err_type: Type of uncertainty (err_type)'
                               ' is not recognised.')
-            int_aver_err.append(int_aver_err0)
+        else:
+            raise IOError('Method not recognised.')
 
-            if do_model:
-                model[(self.rrot >= r0) & (self.rrot < r1)] = int_aver[-1]
-
-        self.radii = np.array(radii)
-        self.int_aver = np.array(int_aver)
-        self.int_aver_err = np.array(int_aver_err)
+        self.radii = radii[:-1]
+        self.int_aver = int_aver
+        self.int_aver_err = int_aver_err
         self.err_type = err_type
+        self.dr_aver = dr
+        self.ring_width_aver = ring_width
 
         if do_model:
+            model = np.zeros_like(self.image)
+            for i, r in enumerate(radii):
+                r0 = r - ring_width / 2.
+                r1 = r + ring_width / 2.
+                if r0 < 0.0:
+                    r0 = 0.0
+                model[(self.rrot >= r0) & (self.rrot < r1)] = int_aver[i]
             pyfits.writeto(
                 self.im_name[:-5] + '.Model.fits', model, self.header,
                 overwrite=True)
@@ -360,12 +448,21 @@ class disk_profile():
         radii = np.arange((int(nr) + 1)) * rmax/nr + dr/2.
         radii = np.concatenate((-1.*radii[::-1], radii))
 
+        flat_image = self.image.reshape(self.nx * self.ny)
+        flat_rrot = self.rrot.reshape(self.nx * self.ny)
+        flat_xrot = self.xrot.reshape(self.nx * self.ny)
+        flat_yrot = self.yrot.reshape(self.nx * self.ny)
+
+        flat_image = flat_image[(flat_rrot <= rmax)]
+        flat_xrot = flat_xrot[(flat_rrot <= rmax)]
+        flat_yrot = flat_yrot[(flat_rrot <= rmax)]
+
         inten = []
         for r in radii:
             r0 = r - dr / 2.
             r1 = r + dr / 2.
-            point = self.image[(self.xrot >= r0) & (self.xrot < r1) &
-                (self.yrot >= -1.*width/2.) & (self.yrot <= width/2.)]
+            point = flat_image[(flat_xrot >= r0) & (flat_xrot < r1) &
+                (flat_yrot >= -1.*width/2.) & (flat_yrot <= width/2.)]
             inten.append(np.nanmean(point))
 
         self.radii_slice = np.array(radii)
@@ -391,7 +488,7 @@ class disk_profile():
         f.close()
 
     def deprojected_image(self, rmax = 1.0, dr = None, nphi = 50, **kwargs):
-        """Creates deprojected image.
+        """Creates a deprojected image.
 
         Args:
           rmax:
@@ -412,7 +509,15 @@ class disk_profile():
         if dr == None:
             dr = 2.0 * self.cellsize
 
-        nr = int(rmax / dr)
+        flat_image = self.image.reshape(self.nx * self.ny)
+        flat_rrot = self.rrot.reshape(self.nx * self.ny)
+        flat_phi = self.phi.reshape(self.nx * self.ny)
+
+        flat_image = flat_image[(flat_rrot <= rmax)]
+        flat_phi = flat_phi[(flat_rrot <= rmax)]
+        flat_rrot = flat_rrot[(flat_rrot <= rmax)]
+
+        nr = int(rmax / dr) + 1
         dphi = 2. * np.pi / nphi
         self.deproj_image = np.ones(shape=(nr, nphi))
         self.deproj_radii = np.arange(0, rmax, dr) + dr/2.
@@ -424,8 +529,8 @@ class disk_profile():
                 phi0 = self.deproj_phi[j] - dphi/2.
                 phi1 = self.deproj_phi[j] + dphi/2.
                 self.deproj_image[i,j] = np.average(
-                    self.image[(self.rrot >= r0) & (self.rrot < r1) &
-                    (self.phi >= phi0) & (self.phi <= phi1)])
+                    flat_image[(flat_rrot >= r0) & (flat_rrot < r1) &
+                    (flat_phi >= phi0) & (flat_phi < phi1)])
 
 
 def deproject_image(im_name, inc, pa, rmax = 1.0, cent = None, dr = None,
