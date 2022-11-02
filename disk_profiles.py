@@ -95,9 +95,9 @@ class disk_profile():
         Header = imObj[0].header
         imObj.close()
         try:
-            if Header['cunit1'] == 'deg':
+            if Header['cunit1'].strip().lower() == 'deg':
                 self.cellsize = abs(Header['cdelt1']) * 3600.
-            elif Header['cunit1'] == 'rad':
+            elif Header['cunit1'].strip().lower() == 'rad':
                 self.cellsize = abs(Header['cdelt1']) * 180. / np.pi * 3600.
         except:
             # If cunit1 is not provided, we assume that cdelt is given in deg
@@ -147,9 +147,9 @@ class disk_profile():
 
         # We build arrays for the x and y positions in the image
         xarray = np.array([range(self.nx) for i in
-            range(self.ny)]) - self.cent[0]
+            range(self.ny)], dtype='float64') - self.cent[0]
         yarray = np.array([range(self.ny) for i in
-            range(self.nx)]).T - self.cent[1]
+            range(self.nx)], dtype='float64').T - self.cent[1]
         xarray *= self.cellsize
         yarray *= self.cellsize
 
@@ -176,7 +176,7 @@ class disk_profile():
     def averaged_profile(self, rmax = 1.0, rmin = 0.0, dr = None,
                          ring_width = None, phi_min=0.0, phi_max=2.*np.pi,
                          err_type='std_a', rms = np.nan, do_model = False,
-                         method = 'standard', **kwargs):
+                         method = 'standard', nan = 'ignore', **kwargs):
         """Computes azimuthally averaged intensity profile.
 
         Args:
@@ -211,16 +211,22 @@ class disk_profile():
               - 'percentiles', it will use the median (instead of mean) and the
               16th and 84th percentiles as the uncertainties.
           do_model:
-              Optional; if True, a "model" image will be created with the
-              emission of each ring, together with an image of the uncertainty
-              in each ring. Default is False.
+            Optional; if True, a "model" image will be created with the
+            emission of each ring, together with an image of the uncertainty
+            in each ring. Default is False.
           method:
-              Optional; it can be 'standard' or 'binned_statistic'. If
-              'binned_statistic' is chosen, it will use the 'binned_statistic'
-              function in scipy when obtaining the profile. This method might be
-              faster in some circumstances, but for all cases tested, the
-              standard method is faster. Note that the 'binned_statistic' method
-              requires that ring_width == dr.
+            Optional; it can be 'standard' or 'binned_statistic'. If
+            'binned_statistic' is chosen, it will use the 'binned_statistic'
+            function in scipy when obtaining the profile. This method might be
+            faster in some circumstances, but for all cases tested, the
+            standard method is faster. Note that the 'binned_statistic' method
+            requires that ring_width == dr.
+          nan:
+            Sets how NaNs should be treated. Options are:
+              - 'ignore': NaNs will be ignored. If a certain radius only has
+              NaNs, then the averaged profile will be NaN.
+              - Any float value: NaNs will be assumed to have that value. E.g.,
+              NaNs might be treated as 0.
         """
         if ('inc' in kwargs) or ('pa' in kwargs) or ('cent' in kwargs):
             self.deprojected_grid(**kwargs)
@@ -253,6 +259,12 @@ class disk_profile():
             & (flat_phi <= phi_max)]
         flat_rrot = flat_rrot[(flat_rrot <= rmax) & (flat_phi >= phi_min)
             & (flat_phi <= phi_max)]
+
+        if (type(nan) == float) or (type(nan) == int):
+            flat_image = np.nan_to_num(flat_image)
+        elif nan != 'ignore':
+            print("WARNING: nan needs to be a float, integer, or 'ignore'. "
+                  'Will continue and ignore NaNs.')
 
         if method == 'standard':
             # For each ring, we will calculate its average intensity and uncertainty
@@ -384,7 +396,7 @@ class disk_profile():
 
         if do_model:
             model = np.zeros_like(self.image)
-            for i, r in enumerate(radii):
+            for i, r in enumerate(self.radii):
                 r0 = r - ring_width / 2.
                 r1 = r + ring_width / 2.
                 if r0 < 0.0:
@@ -404,7 +416,7 @@ class disk_profile():
         """
         if outfile == None:
             outfile = self.im_name[:-5] + '.csv'
-        f = open(outfile + '.csv', 'w')
+        f = open(outfile, 'w')
         if self.err_type == 'percentiles':
             f.write('Radius[arcsec],Int[{}],84_percentile,16_percentile\n'.format(self.IntUnit))
             for r, A, ErrA in zip(self.radii, self.int_aver, self.int_aver_err):
@@ -578,6 +590,9 @@ def deproject_image(im_name, inc, pa, rmax = 1.0, cent = None, dr = None,
     else:
         deproj_img.deprojected_grid(inc = inc, pa = pa, cent = cent)
 
+    if outfile == None:
+        outfile = im_name[:-5]
+
     deproj_img.deprojected_image(rmax = rmax, dr = dr, nphi = nphi)
 
     if do_plot:
@@ -613,7 +628,7 @@ def deproject_image(im_name, inc, pa, rmax = 1.0, cent = None, dr = None,
         ax.set_xlabel('Radii (au)',fontsize=15)
         if outfile == None:
             outfile = im_name[:-5] + '_deproj.pdf'
-        plt.savefig(outfile + '.pdf')
+        plt.savefig(outfile + '.pdf', bbox_inches = 'tight')
         plt.close(f)
     return deproj_img
 
@@ -740,7 +755,7 @@ def rad_slice(im_name, pa, rmax = 1.0, rms = np.nan, cent = None, dr = None,
 
         if outfile == None:
             outfile = im_name[:-5] + '_slice.pdf'
-        plt.savefig(outfile + '_slice.pdf', dpi = 650)
+        plt.savefig(outfile + '_slice.pdf', dpi = 650, bbox_inches = 'tight')
         plt.close(fig)
 
     return slice_img
@@ -748,9 +763,9 @@ def rad_slice(im_name, pa, rmax = 1.0, rms = np.nan, cent = None, dr = None,
 
 def rad_profile(im_name, inc, pa, rmin = 0.0, rmax = 1.0, rms = np.nan,
                 dr = None, cent = None, ring_width = None, phi_min = 0.0,
-                phi_max = 2.*np.pi, err_type = 'rms_a', do_model = False,
-                outfile = None, do_plot=True, color='#809fff', dist=None,
-                ylim=None, ylog=False):
+                phi_max = 2.*np.pi, err_type = 'std_a', do_model = False,
+                nan = 'ignore', outfile = None, do_plot=True, color='#809fff',
+                dist=None, ylim=None, ylog=False):
     """Creates an azimuthally averaged radial profile.
 
    Returns arrays with radii, integrated intensity and uncertainty.
@@ -794,6 +809,12 @@ def rad_profile(im_name, inc, pa, rmin = 0.0, rmax = 1.0, rms = np.nan,
         Optional; if True, a "model" image will be created with the emission of
         each ring, together with an image of the uncertainty in each ring.
         Default is False.
+      nan:
+        Sets how NaNs should be treated. Options are:
+          - 'ignore': NaNs will be ignored. If a certain radius only has
+          NaNs, then the averaged profile will be NaN.
+          - Any float value: NaNs will be assumed to have that value. E.g.,
+          NaNs might be treated as 0.
       outfile:
         Optional; Name of the output files (.txt and .pdf). Default is the
         image name, without extension.
@@ -820,12 +841,14 @@ def rad_profile(im_name, inc, pa, rmin = 0.0, rmax = 1.0, rms = np.nan,
 
     profile_img.averaged_profile(rmax = rmax, rmin = rmin, dr = dr,
     ring_width = ring_width, phi_min = phi_min, phi_max = phi_max,
-    err_type = err_type, rms = rms, do_model = do_model)
+    err_type = err_type, rms = rms, do_model = do_model, nan = nan)
 
     profile_img.export_profile(outfile = outfile)
 
     # We make a plot with the profile
     if do_plot:
+        if outfile == None:
+            outfile = im_name[:-5]
         radii = profile_img.radii
         # If the units of the image are Jy/beam, we will make the plot in mJy/beam
         if profile_img.IntUnit == 'Jy/beam':
@@ -872,7 +895,7 @@ def rad_profile(im_name, inc, pa, rmin = 0.0, rmax = 1.0, rms = np.nan,
         #twax2.yaxis.set_minor_locator(ticker.MultipleLocator(0.05))
         twax2.tick_params(labelright='off',direction='in',which='both')
 
-        plt.savefig(outfile + '_profile.pdf',dpi = 650)
+        plt.savefig(outfile + '_profile.pdf',dpi = 650, bbox_inches = 'tight')
         plt.close(fig)
 
     return profile_img
