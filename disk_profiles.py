@@ -125,6 +125,7 @@ class disk_profile():
         # Initialize inc and pa
         self.inc = 0.0
         self.pa = 0.0
+        self.nphi = None
         self.header = Header
 
     def deprojected_grid(self, **kwargs):
@@ -434,9 +435,9 @@ class disk_profile():
 
         Args:
           rmax:
-             maximum radii for the radial profile, in arcsec.
+            maximum radii for the radial profile, in arcsec.
           rms:
-             rms of the map (in Jy/beam).
+            rms of the map (in Jy/beam).
           dr:
             Optional; separation between points, in arcsec.
           width:
@@ -517,6 +518,8 @@ class disk_profile():
                 rrot = self.rrot
             except AttributeError:
                 self.deprojected_grid()
+        
+        self.nphi = nphi
 
         if dr == None:
             dr = 2.0 * self.cellsize
@@ -543,6 +546,88 @@ class disk_profile():
                 self.deproj_image[i,j] = np.average(
                     flat_image[(flat_rrot >= r0) & (flat_rrot < r1) &
                     (flat_phi >= phi0) & (flat_phi < phi1)])
+
+    def phi_profile(self, rmin, rmax, nphi = 100, rms = None, **kwargs):
+        """Creates an azimuthal intensity profile within a given range of radii.
+
+        Args:
+          rmin:
+            minimum radius of the range where the profile will be computed, in
+            arcsec.
+          rmax:
+            maximum radius of the range where the profile will be computed, in
+            arcsec.
+          nphi:
+            number of points in azimuth. Default is 100.
+          rms:
+            rms of the image. If given, the error bars will be computed as the
+            rms divided by the area of the bins, (with a minimum of 1 rms if the
+            area is smaller than one beam). If not provided, the error will be
+            computed with the standard deviation within the beam, divided by its
+            area.
+        
+        Kwargs:
+          inc, pa:
+            inclination and PA used for the specific profile or deprojection, in
+            arcsec.
+          cent:
+            pixel coordinates of center used for the specific profile or
+            deprojection.
+        """
+        if ('inc' in kwargs) or ('pa' in kwargs) or ('cent' in kwargs):
+            self.deprojected_grid(**kwargs)
+        else:
+            try:
+                rrot = self.rrot
+            except AttributeError:
+                self.deprojected_grid()
+
+        flat_image = self.image.reshape(self.nx * self.ny)
+        flat_rrot = self.rrot.reshape(self.nx * self.ny)
+        flat_phi = self.phi.reshape(self.nx * self.ny)
+
+        annulus = (flat_rrot >= rmin) & (flat_rrot <= rmax)
+        flat_image = flat_image[annulus]
+        flat_phi = flat_phi[annulus]
+
+        self.az_profile_int, az_edges, dummy = binned_statistic(
+            flat_phi, flat_image, bins = nphi)
+        self.az_profile_phi = az_edges[0:-1] + (az_edges[1] - az_edges[0]) / 2.0
+
+        Abeam = np.pi * self.bmaj * self.bmin/(4.0 * np.log(2.0)) # Area of the beam
+        area_bin = binned_statistic(
+            flat_phi, flat_image, bins = nphi,
+            statistic = 'count')[0] * self.cellsize**2.
+        nbeams = area_bin / Abeam # Number of beams in the bin
+        nbeams[nbeams < 1.0] = 1.0 # The error cannot be higher than one rms
+        if rms == None:
+            # If rms not provided, we use the standard deviation inside the bin
+            int_aver_err = 1.0 / np.sqrt(nbeams)
+            int_aver_err *= binned_statistic(
+            flat_phi, flat_image, bins = nphi,
+            statistic = 'std')[0]
+        else:
+            int_aver_err = rms / np.sqrt(nbeams)
+
+        self.az_profile_err = int_aver_err
+
+    def export_azprofile(self, outfile = None):
+        """Exports azimuthal intensity profile.
+
+        Args:
+          outfile:
+            Name of the output files (.txt and .pdf). Default is the
+            image name, without extension.
+        """
+        if outfile == None:
+            outfile = self.im_name[:-5] + '.csv'
+        f = open(outfile, 'w')
+        f.write('Azimuth[deg],Int[{}],Int_err\n'.format(self.IntUnit))
+        for p, A, ErrA in zip(
+            self.az_profile_phi * 180./np.pi, self.az_profile_int, 
+            self.az_profile_err):
+            f.write('{},{},{}\n'.format(p, A, ErrA))
+        f.close()
 
 
 def deproject_image(im_name, inc, pa, rmax = 1.0, cent = None, dr = None,
@@ -624,8 +709,8 @@ def deproject_image(im_name, inc, pa, rmax = 1.0, cent = None, dr = None,
                     deproj_img.deproj_image.T, extent=(0.0, rmax, 0., 360.),
                     aspect = rmax/360.*0.5, cmap = cm.viridis, vmin= 0.0,
                     vmax = np.nanmax(deproj_img.deproj_image))
-        ax.set_ylabel('Azimuth (deg)',fontsize=15)
-        ax.set_xlabel('Radii (au)',fontsize=15)
+        ax.set_ylabel('Azimuth [deg]',fontsize=15)
+        ax.set_xlabel('Radii [arcsec]',fontsize=15)
         if outfile == None:
             outfile = im_name[:-5] + '_deproj.pdf'
         plt.savefig(outfile + '.pdf', bbox_inches = 'tight')
@@ -768,8 +853,6 @@ def rad_profile(im_name, inc, pa, rmin = 0.0, rmax = 1.0, rms = np.nan,
                 dist=None, ylim=None, ylog=False):
     """Creates an azimuthally averaged radial profile.
 
-   Returns arrays with radii, integrated intensity and uncertainty.
-
     Args:
       im_name:
         name of the image, in fits format.
@@ -896,6 +979,104 @@ def rad_profile(im_name, inc, pa, rmin = 0.0, rmax = 1.0, rms = np.nan,
         twax2.tick_params(labelright='off',direction='in',which='both')
 
         plt.savefig(outfile + '_profile.pdf',dpi = 650, bbox_inches = 'tight')
+        plt.close(fig)
+
+    return profile_img
+
+
+def azimuthal_profile(im_name, inc, pa, rmin, rmax, nphi = 100, rms = None, 
+                      cent = None, outfile = None, do_plot = True, 
+                      color = '#809fff', ylim=None, ylog=False):
+    """Creates an azimuthal profile averaged within a range of radii.
+
+    Args:
+      im_name:
+        name of the image, in fits format.
+      inc, pa:
+        inclination and position angle of the source, in degrees.
+      rmin:
+        minimum radius of the range where the profile will be computed, in
+        arcsec.
+      rmax:
+        maximum radius of the range where the profile will be computed, in
+        arcsec.
+      nphi:
+        Optional; number of points in azimuth. Default is 100.
+      rms:
+        Optional; rms of the image. If given, the error bars will be 
+        computed as the rms divided by the area of the bins, (with a minimum
+        of 1 rms if the area is smaller than one beam). If not provided, the
+        error will be computed with the standard deviation within the beam,
+        divided by its area.
+      cent:
+        Optional; tuple with the position of the center of the source
+        (in pixels).
+      outfile:
+        Optional; Name of the output files (.txt and .pdf). Default is the
+        image name, without extension.
+      do_plot:
+        Optional; if True, a plot will be created with the profile.
+      color:
+        Optional; color of the plot. Default is blue.
+      ylim:
+        Optional; limit of y axis, in units of the plot. If not set, they
+        will be selected automatically.
+      ylog:
+        Optional; if True, it will set the y scale to log. Default is False.
+    Returns:
+        disk_profile object.
+    """
+    profile_img = disk_profile(im_name)
+    if cent == None:
+        profile_img.deprojected_grid(inc = inc, pa = pa)
+    else:
+        profile_img.deprojected_grid(inc = inc, pa = pa, cent = cent)
+
+    profile_img.phi_profile(rmin, rmax, nphi = nphi, rms = rms)
+
+    profile_img.export_azprofile(outfile = outfile)
+
+    if do_plot:
+        if outfile == None:
+            outfile = im_name[:-5]
+        phi = profile_img.az_profile_phi * 180. / np.pi
+        # If the units of the image are Jy/beam, we will make the plot in mJy/beam
+        if profile_img.IntUnit == 'Jy/beam':
+            ytitle = 'Average Intensity [mJy/beam]'
+            int_aver = profile_img.az_profile_int * 1000.0 #mJy/beam
+            int_aver_err = profile_img.az_profile_err * 1000.0 #mJy/beam
+        else:
+            ytitle = 'Average Intensity ['+profile_img.IntUnit+']'
+            int_aver = profile_img.az_profile_int
+            int_aver_err = profile_img.az_profile_err
+
+        fig = plt.figure()
+        ax1 = fig.add_subplot(1,1,1)
+        ax1.set_ylabel(ytitle,fontsize=15)
+        ax1.set_xlabel('Azimuth [deg]',fontsize=15)
+        ax1.set_xlim([0.0, 360.])
+        #ax1.yaxis.set_minor_locator(ticker.MultipleLocator(0.05))
+        ax1.tick_params(axis='both',direction='inout',which='both')
+        ax1.fill_between(
+            phi, int_aver + int_aver_err, int_aver - int_aver_err,
+            facecolor=color)
+        ax1.plot(phi, int_aver, 'k-')
+
+        ax1.axhline(y=0.0, color='k', linestyle='--', lw=0.5)
+        if ylim != None:
+            ax1.set_ylim(ylim)
+
+        if ylog:
+            ax1.set_yscale('log')
+        twax2 = ax1.twinx()
+        twax2.set_ylim(ax1.get_ylim())
+        #twax2.yaxis.set_minor_locator(ticker.MultipleLocator(0.05))
+        twax2.tick_params(labelright='off',direction='in',which='both')
+
+        ax1.set_title('Azimuthal profile betwee {}" and {}"'.format(
+            str(rmin), str(rmax)))
+
+        plt.savefig(outfile + '_azprofile.pdf',dpi = 650, bbox_inches = 'tight')
         plt.close(fig)
 
     return profile_img
