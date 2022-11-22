@@ -45,6 +45,9 @@ class disk_profile():
       phi:
         2D array of azimuthal angle for each pixel, in degrees. Computed with
         deprojected_grid() method.
+      phi_disk:
+        2D array of azimuthal angle in the plane of the disk for each pixel, 
+        in degrees. Computed with deprojected_grid() method.
       radii:
         1D vector with radial coordinates of azimuthally averaged profile,
         in arcsec. Computed with averaged_profile().
@@ -173,6 +176,11 @@ class disk_profile():
         self.phi = np.arctan2(yarray, xarray)
         # We make all the angles positive
         self.phi[np.where(self.phi<0.0)] += 2. * np.pi
+
+        # Array with the azimuth in the plane of the disk
+        # 0 deg should be at phi = PA, and phi_disk should rotate counter-clockwise
+        self.phi_disk = np.arctan2(-self.xrot, self.yrot) - np.pi / 2.
+        self.phi_disk[np.where(self.phi_disk < 0.0)] += 2. * np.pi
 
     def averaged_profile(self, rmax = 1.0, rmin = 0.0, dr = None,
                          ring_width = None, phi_min=0.0, phi_max=2.*np.pi,
@@ -503,13 +511,17 @@ class disk_profile():
     def deprojected_image(self, rmax = 1.0, dr = None, nphi = 50, **kwargs):
         """Creates a deprojected image.
 
+        Note: The deprojection is obtained in the plane of the disk. In other 
+        words, the origin of azimuth is at PA of the disk, and the azimuthal 
+        angle rotates counterclockwise.
+
         Args:
           rmax:
             Optional; maximum radii for the image, in arcsec.
           dr:
             Optional; size of radial pixel of output deprojected image, in arcsec.
           nphi:
-            Optional; number of bins in azimtuh angle.
+            Optional; number of bins in azimuthal angle.
         """
         if ('inc' in kwargs) or ('pa' in kwargs) or ('cent' in kwargs):
             self.deprojected_grid(**kwargs)
@@ -526,7 +538,7 @@ class disk_profile():
 
         flat_image = self.image.reshape(self.nx * self.ny)
         flat_rrot = self.rrot.reshape(self.nx * self.ny)
-        flat_phi = self.phi.reshape(self.nx * self.ny)
+        flat_phi = self.phi_disk.reshape(self.nx * self.ny)
 
         flat_image = flat_image[(flat_rrot <= rmax)]
         flat_phi = flat_phi[(flat_rrot <= rmax)]
@@ -549,6 +561,10 @@ class disk_profile():
 
     def phi_profile(self, rmin, rmax, nphi = 100, rms = None, **kwargs):
         """Creates an azimuthal intensity profile within a given range of radii.
+
+        Note: The profile is obtained in the plane of the disk. In other words,
+        the origin of azimuth is at PA of the disk, and the azimuthal angle 
+        rotates counterclockwise.
 
         Args:
           rmin:
@@ -584,7 +600,7 @@ class disk_profile():
 
         flat_image = self.image.reshape(self.nx * self.ny)
         flat_rrot = self.rrot.reshape(self.nx * self.ny)
-        flat_phi = self.phi.reshape(self.nx * self.ny)
+        flat_phi = self.phi_disk.reshape(self.nx * self.ny)
 
         annulus = (flat_rrot >= rmin) & (flat_rrot <= rmax)
         flat_image = flat_image[annulus]
@@ -632,10 +648,14 @@ class disk_profile():
 
 def deproject_image(im_name, inc, pa, rmax = 1.0, cent = None, dr = None,
                     nphi = 50, do_plot = False, rms = None, contours = False,
-                    levels = [], outfile = None):
+                    levels = [], vmax = None, outfile = None):
     """Creates a deprojected image, in polar coordinates (azimuth vs radii).
 
     Returns arrays with radii, azimuthal angles, and deprojected image.
+
+    Note: The deprojection is obtained in the plane of the disk. In other words,
+    the origin of azimuth is at PA of the disk, and the azimuthal angle rotates
+    counterclockwise.
 
     Args:
       im_name:
@@ -663,6 +683,9 @@ def deproject_image(im_name, inc, pa, rmax = 1.0, cent = None, dr = None,
       levels:
         Optional; list. Only used if contours=True. Sets the levels of
         the contours.
+      vmax:
+        Optional; vmax used for the plot (in imshow), if contours are not used.
+        By default it will be the maximum.
       outfile:
         Optional; Name of the output files (.pdf). Default is the image name,
         without extension
@@ -699,16 +722,18 @@ def deproject_image(im_name, inc, pa, rmax = 1.0, cent = None, dr = None,
                 deproj_img.deproj_image.T[::-1,:],
                 aspect = rmax / 360., levels = levels)
         else:
+            if vmax == None:
+                vmax = np.nanmax(deproj_img.deproj_image)
             if rms != None:
                 ax.imshow(
-                    deproj_img.deproj_image.T, extent = (0.0,rmax,0.,360.),
-                    aspect = rmax/360.*0.5, cmap = cm.viridis, vmin = rms,
-                    vmax = np.nanmax(deproj_img.deproj_image))
+                    deproj_img.deproj_image.T[-1:0:-1,:], 
+                    extent = (0.0,rmax,0.,360.), aspect = rmax/360.*0.5,
+                    cmap = cm.viridis, vmin = rms, vmax = vmax)
             else:
                 ax.imshow(
-                    deproj_img.deproj_image.T, extent=(0.0, rmax, 0., 360.),
-                    aspect = rmax/360.*0.5, cmap = cm.viridis, vmin= 0.0,
-                    vmax = np.nanmax(deproj_img.deproj_image))
+                    deproj_img.deproj_image.T[-1:0:-1,:], 
+                    extent=(0.0, rmax, 0., 360.), aspect = rmax/360.*0.5,
+                    cmap = cm.viridis, vmin= 0.0, vmax = vmax)
         ax.set_ylabel('Azimuth [deg]',fontsize=15)
         ax.set_xlabel('Radii [arcsec]',fontsize=15)
         if outfile == None:
@@ -989,6 +1014,10 @@ def azimuthal_profile(im_name, inc, pa, rmin, rmax, nphi = 100, rms = None,
                       color = '#809fff', ylim=None, ylog=False):
     """Creates an azimuthal profile averaged within a range of radii.
 
+    Note: The profile is obtained in the plane of the disk. In other words,
+    the origin of azimuth is at PA of the disk, and the azimuthal angle rotates
+    counterclockwise.
+
     Args:
       im_name:
         name of the image, in fits format.
@@ -1062,7 +1091,7 @@ def azimuthal_profile(im_name, inc, pa, rmin, rmax, nphi = 100, rms = None,
             facecolor=color)
         ax1.plot(phi, int_aver, 'k-')
 
-        ax1.axhline(y=0.0, color='k', linestyle='--', lw=0.5)
+        # ax1.axhline(y=0.0, color='k', linestyle='--', lw=0.5)
         if ylim != None:
             ax1.set_ylim(ylim)
 
